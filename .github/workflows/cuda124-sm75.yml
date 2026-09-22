@@ -1,0 +1,113 @@
+name: CUDA 12.4 / SM75 image
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths:
+      - ".github/workflows/cuda124-sm75.yml"
+      - ".dockerignore"
+      - ".gitmodules"
+      - "docker/Dockerfile.cuda"
+      - "CMakeLists.txt"
+      - "cmake/**"
+      - "src/**"
+      - "include/**"
+      - "examples/**"
+      - "ggml"
+      - "ggml/**"
+      - "thirdparty/**"
+      - "scripts/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout source and submodules
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+
+      - name: Set image name
+        id: image
+        shell: bash
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set image tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.name }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=cu124-sm75,enable=${{ github.ref == 'refs/heads/master' }}
+            type=sha,prefix=cu124-sm75-sha-,format=long
+
+      - name: Build and push CUDA 12.4 / SM75 image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.cuda
+          platforms: linux/amd64
+          pull: true
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            CUDA_VERSION=12.4.1
+            UBUNTU_VERSION=22.04
+            CUDA_ARCHITECTURES=75
+            GGML_CUDA_ENABLE_DYNAMIC_CPU_BACKENDS=ON
+          cache-from: type=gha,scope=cuda124-sm75
+          cache-to: type=gha,scope=cuda124-sm75,mode=max,ignore-error=true
+
+      - name: Write pull command to summary
+        env:
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        shell: bash
+        run: |
+          {
+            echo '### Published CUDA 12.4 / SM75 image'
+            echo
+            echo '```text'
+            printf '%s\n' "$IMAGE_TAGS"
+            echo '```'
+            echo
+            echo 'Pull this exact build:'
+            echo '```sh'
+            printf 'podman pull %s@%s\n' "$IMAGE_NAME" "$IMAGE_DIGEST"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
